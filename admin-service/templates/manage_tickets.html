@@ -1,0 +1,51 @@
+{% extends "admin_base.html" %}
+{% block content %}
+<h1>Управление билетами для: {{ concert.title }}</h1>
+<div class="form-container">
+    <h2>Добавить тип билета</h2>
+    <form method="post">
+        <div class="form-group">
+            <label>Тип (напр., 'Танцпол', 'VIP')</label>
+            <input type="text" name="type" required>
+        </div>
+        <div class="form-group">
+            <label>Цена</label>
+            <input type="number" name="price" min="0" required>
+        </div>
+        <div class="form-group">
+            <label>Количество</label>
+            <input type="number" name="total_quantity" min="0" required>
+        </div>
+        <button type="submit">Добавить</button>
+    </form>
+</div>
+<hr>
+<h2>Существующие типы билетов</h2>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Тип</th>
+            <th>Цена</th>
+            <th>Количество</th>
+            <th>Действия</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for ticket in concert.ticket_types %}
+        <tr>
+            <td>{{ ticket.id }}</td>
+            <td>{{ ticket.type }}</td>
+            <td>{{ ticket.price }}</td>
+            <td>{{ ticket.total_quantity }}</td>
+            <td>
+                <form method="post" action="{{ url_for('delete_ticket_type', ticket_id=ticket.id) }}" style="display:inline;">
+                    <button type="submit" class="btn btn-danger" onclick="return confirm('Вы уверены?');">Удалить</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+<a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary" style="margin-top: 20px;">Назад к концертам</a>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "admin_base.html" %}
+{% block content %}
+<h1>Редактирование концерта: {{ concert.title }}</h1>
+<div class="form-container">
+    <form method="post" enctype="multipart/form-data">
+        <div class="form-group">
+            <label>Название</label>
+            <input type="text" name="title" value="{{ concert.title }}" required>
+        </div>
+        <div class="form-group">
+            <label>Описание</label>
+            <textarea name="description">{{ concert.description or '' }}</textarea>
+        </div>
+        <div class="form-group">
+            <label>Дата (ГГГГ-ММ-ДД ЧЧ:ММ)</label>
+            <input type="text" name="date" value="{{ concert.date.strftime('%Y-%m-%d %H:%M') if concert.date else '' }}" required>
+        </div>
+        <div class="form-group">
+            <label>Изображение</label>
+            <p>Текущее: <a href="{{ concert.image_url }}" target="_blank">{{ concert.image_url }}</a></p>
+            <input type="file" name="image">
+            <small>Загрузите новый файл, чтобы заменить текущий.
+        </div>
+        <div class="form-group">
+            <label>Артисты</label>
+            <div class="checkbox-group">
+                {% set concert_artist_ids = concert.artists|map(attribute='id')|list %}
+                {% for artist in all_artists %}
+                <label>
+                    <input type="checkbox" name="artist_ids" value="{{ artist.id }}" {% if artist.id in concert_artist_ids %}checked{% endif %}>
+                    {{ artist.name }}
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Сохранить изменения</button>
+        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary">Отмена</a>
+    </form>
+</div>
+{% endblock %}

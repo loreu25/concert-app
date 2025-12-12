@@ -1,0 +1,30 @@
+{% extends "admin_base.html" %}
+{% block content %}
+<h1>Все бронирования</h1>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>ID Пользователя</th>
+            <th>Концерт</th>
+            <th>Тип билета</th>
+            <th>Количество</th>
+            <th>Статус</th>
+            <th>Дата</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for booking in bookings %}
+        <tr>
+            <td>{{ booking.id }}</td>
+            <td>{{ booking.user_id }}</td>
+            <td>{{ booking.concert.title }}</td>
+            <td>{{ booking.ticket_type.type }}</td>
+            <td>{{ booking.quantity }}</td>
+            <td>{{ booking.status }}</td>
+            <td>{{ booking.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

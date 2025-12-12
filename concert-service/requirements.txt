@@ -3,3 +3,4 @@ Flask_SQLAlchemy
 psycopg2-binary
 pika
 requests
+PyJWT

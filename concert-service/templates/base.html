@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}TicketApp{% endblock %}</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; background-color: #f4f4f4; color: #333; }
+        .navbar {
+            background-color: #fff; 
+            padding: 10px 20px; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex; 
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar a { text-decoration: none; color: #333; padding: 8px 15px; }
+        .navbar .logo { font-weight: bold; font-size: 1.2em; }
+        .container { max-width: 960px; margin: 20px auto; padding: 20px; background-color: #fff; border-radius: 8px; }
+        .alert {
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .alert-success { background-color: #d4edda; color: #155724; }
+        .alert-danger { background-color: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <a href="/" class="logo">TicketApp</a>
+        <div>
+            <a href="/">Афиша</a>
+            {% if g.user %}
+                <a href="/my-bookings">Мои бронирования</a>
+                {% if g.user and g.user.role == 'admin' %}
+                    <a href="/admin/dashboard" target="_blank">Админ-панель</a>
+                {% endif %}
+                <a href="/logout">Выйти</a>
+            {% else %}
+                <a href="/login">Войти</a>
+                <a href="/register">Регистрация</a>
+            {% endif %}
+        </div>
+    </nav>
+
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

@@ -1,6 +1,6 @@
 import os
 import flask
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template, redirect, url_for
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt
 from werkzeug.utils import secure_filename
 from datetime import datetime
@@ -18,6 +18,11 @@ def allowed_file(filename):
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+
+    # Настраиваем JWT для чтения токена из cookie
+    app.config["JWT_TOKEN_LOCATION"] = ["headers", "cookies"]
+    app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
+    app.config["JWT_COOKIE_CSRF_PROTECT"] = False # В реальном приложении лучше включить
     jwt = JWTManager(app)
     # Создаем папку для загрузок, если нет
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
@@ -398,15 +403,204 @@ def create_app():
         file.save(save_path)
 
         # URL для доступа к файлу
-        image_url = f"http://localhost:5003/static/{filename}"
+        image_url = f"/admin/static/{filename}"
 
         return jsonify({"image_url": image_url}), 200
 
     # Раздаем статические файлы из папки uploads
     @app.route('/admin/static/<path:filename>')
-    @admin_required
     def static_files(filename):
         return flask.send_from_directory(app.config["UPLOAD_FOLDER"], filename)
+
+    # --- Admin Panel HTML Routes ---
+    @app.route('/admin/dashboard', methods=['GET', 'POST'])
+    @admin_required
+    def admin_dashboard():
+        if request.method == 'POST':
+            title = request.form.get('title')
+            description = request.form.get('description')
+            date_str = request.form.get('date')
+            image_url = request.form.get('image_url')
+            artist_ids = request.form.getlist('artist_ids') # Получаем список ID из чекбоксов
+
+            # Обработка загрузки файла
+            if 'image' in request.files and request.files['image'].filename != '':
+                file = request.files['image']
+                if allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                    image_url = f"/admin/static/{filename}"
+
+            try:
+                date = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                # В реальном приложении здесь было бы flash-сообщение
+                return redirect(url_for('admin_dashboard')) # Просто перезагружаем, если дата неверна
+
+            new_concert = Concert(
+                title=title,
+                description=description,
+                date=date,
+                image_url=image_url
+            )
+
+            if artist_ids:
+                # artist_ids уже является списком, преобразуем в int
+                artists = Artist.query.filter(Artist.id.in_([int(a_id) for a_id in artist_ids])).all()
+                new_concert.artists = artists
+
+            db.session.add(new_concert)
+            db.session.commit()
+            
+            return redirect(url_for('admin_dashboard'))
+
+        concerts = Concert.query.order_by(Concert.date.desc()).all()
+        all_artists = Artist.query.all()
+        return render_template('admin_dashboard.html', concerts=concerts, all_artists=all_artists)
+
+    @app.route('/admin/delete-concert/<int:concert_id>', methods=['POST'])
+    @admin_required
+    def delete_concert_admin(concert_id):
+        concert = Concert.query.get(concert_id)
+        if concert:
+            db.session.delete(concert)
+            db.session.commit()
+        return redirect(url_for('admin_dashboard'))
+
+    @app.route('/admin/edit-concert/<int:concert_id>', methods=['GET', 'POST'])
+    @admin_required
+    def edit_concert_admin(concert_id):
+        concert = Concert.query.get_or_404(concert_id)
+
+        if request.method == 'POST':
+            concert.title = request.form.get('title')
+            concert.description = request.form.get('description')
+            date_str = request.form.get('date')
+            artist_ids = request.form.getlist('artist_ids')
+
+            # Обработка загрузки файла
+            if 'image' in request.files and request.files['image'].filename != '':
+                file = request.files['image']
+                if allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                    concert.image_url = f"/admin/static/{filename}"
+            else:
+                # Если новый файл не загружен, используем URL из формы
+                concert.image_url = request.form.get('image_url')
+
+            try:
+                concert.date = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                pass # Оставляем старую дату, если формат неверный
+
+            # Обновляем артистов
+            if artist_ids:
+                artists = Artist.query.filter(Artist.id.in_([int(a_id) for a_id in artist_ids])).all()
+                concert.artists = artists
+            else:
+                concert.artists = []
+
+            db.session.commit()
+            return redirect(url_for('admin_dashboard'))
+
+        all_artists = Artist.query.all()
+        return render_template('edit_concert.html', concert=concert, all_artists=all_artists)
+
+    @app.route('/admin/artists', methods=['GET', 'POST'])
+    @admin_required
+    def manage_artists():
+        if request.method == 'POST':
+            name = request.form.get('name')
+            description = request.form.get('description')
+            genre = request.form.get('genre')
+            image_url = None
+
+            if 'image' in request.files and request.files['image'].filename != '':
+                file = request.files['image']
+                if allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                    image_url = f"/admin/static/{filename}"
+
+            new_artist = Artist(
+                name=name,
+                description=description,
+                genre=genre,
+                image_url=image_url
+            )
+            db.session.add(new_artist)
+            db.session.commit()
+            return redirect(url_for('manage_artists'))
+
+        artists = Artist.query.all()
+        return render_template('artists.html', artists=artists)
+
+    @app.route('/admin/edit-artist/<int:artist_id>', methods=['GET', 'POST'])
+    @admin_required
+    def edit_artist_admin(artist_id):
+        artist = Artist.query.get_or_404(artist_id)
+        if request.method == 'POST':
+            artist.name = request.form.get('name')
+            artist.description = request.form.get('description')
+            artist.genre = request.form.get('genre')
+
+            if 'image' in request.files and request.files['image'].filename != '':
+                file = request.files['image']
+                if allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                    artist.image_url = f"/admin/static/{filename}"
+            
+            db.session.commit()
+            return redirect(url_for('manage_artists'))
+
+        return render_template('edit_artist.html', artist=artist)
+
+    @app.route('/admin/delete-artist/<int:artist_id>', methods=['POST'])
+    @admin_required
+    def delete_artist_admin(artist_id):
+        artist = Artist.query.get_or_404(artist_id)
+        db.session.delete(artist)
+        db.session.commit()
+        return redirect(url_for('manage_artists'))
+
+    @app.route('/admin/bookings')
+    @admin_required
+    def manage_bookings():
+        bookings = Booking.query.order_by(Booking.created_at.desc()).all()
+        return render_template('bookings.html', bookings=bookings)
+
+    @app.route('/admin/manage-tickets/<int:concert_id>', methods=['GET', 'POST'])
+    @admin_required
+    def manage_tickets(concert_id):
+        concert = Concert.query.get_or_404(concert_id)
+        if request.method == 'POST':
+            ticket_type = request.form.get('type')
+            price = request.form.get('price')
+            total_quantity = request.form.get('total_quantity')
+
+            if ticket_type and price and total_quantity:
+                new_ticket = TicketType(
+                    concert_id=concert.id,
+                    type=ticket_type,
+                    price=float(price),
+                    total_quantity=int(total_quantity)
+                )
+                db.session.add(new_ticket)
+                db.session.commit()
+            return redirect(url_for('manage_tickets', concert_id=concert.id))
+        
+        return render_template('manage_tickets.html', concert=concert)
+
+    @app.route('/admin/delete-ticket/<int:ticket_id>', methods=['POST'])
+    @admin_required
+    def delete_ticket_type(ticket_id):
+        ticket = TicketType.query.get_or_404(ticket_id)
+        concert_id = ticket.concert_id
+        db.session.delete(ticket)
+        db.session.commit()
+        return redirect(url_for('manage_tickets', concert_id=concert_id))
 
     return app
 

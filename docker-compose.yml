@@ -46,8 +46,6 @@ services:
       JWT_REFRESH_SECRET: my_refresh_secret
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: adminpassword
-    ports:
-      - "5001:5001"
     restart: on-failure
 
   admin_service:
@@ -61,8 +59,6 @@ services:
       - JWT_SECRET_KEY=my_secret
     volumes:
       - ./admin-service/uploads:/app/uploads
-    ports:
-      - "5003:5003"
     restart: on-failure
 
   concert_service:
@@ -71,8 +67,19 @@ services:
     depends_on:
       admin_service:
         condition: service_started
+    restart: on-failure
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
     ports:
-      - "5002:5002"
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - auth_service
+      - admin_service
+      - concert_service
     restart: on-failure
 
 volumes:

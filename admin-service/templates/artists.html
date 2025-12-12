@@ -1,0 +1,53 @@
+{% extends "admin_base.html" %}
+{% block content %}
+<h1>Управление артистами</h1>
+<div class="form-container">
+    <h2>Добавить нового артиста</h2>
+    <form method="post" enctype="multipart/form-data">
+        <div class="form-group">
+            <label>Имя</label>
+            <input type="text" name="name" required>
+        </div>
+        <div class="form-group">
+            <label>Описание</label>
+            <textarea name="description"></textarea>
+        </div>
+        <div class="form-group">
+            <label>Жанр</label>
+            <input type="text" name="genre">
+        </div>
+        <div class="form-group">
+            <label>Изображение</label>
+            <input type="file" name="image">
+        </div>
+        <button type="submit">Добавить</button>
+    </form>
+</div>
+<hr>
+<h2>Список артистов</h2>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Имя</th>
+            <th>Жанр</th>
+            <th>Действия</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for artist in artists %}
+        <tr>
+            <td>{{ artist.id }}</td>
+            <td>{{ artist.name }}</td>
+            <td>{{ artist.genre }}</td>
+            <td class="actions">
+                <a href="{{ url_for('edit_artist_admin', artist_id=artist.id) }}" class="btn btn-secondary">Редактировать</a>
+                <form method="post" action="{{ url_for('delete_artist_admin', artist_id=artist.id) }}" style="display:inline;">
+                    <button type="submit" class="btn btn-danger" onclick="return confirm('Вы уверены?');">Удалить</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

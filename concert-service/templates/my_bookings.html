@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Мои бронирования{% endblock %}
+{% block content %}
+<h1>Мои бронирования</h1>
+{% if bookings %}
+    <table class="bookings-table">
+        <thead>
+            <tr>
+                <th>ID Брони</th>
+                <th>Концерт</th>
+                <th>Тип билета</th>
+                <th>Количество</th>
+                <th>Статус</th>
+                <th>Дата</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for booking in bookings %}
+                <tr>
+                    <td>{{ booking.id }}</td>
+                    <td>{{ booking.concert_title }}</td>
+                    <td>{{ booking.ticket_type }}</td>
+                    <td>{{ booking.quantity }}</td>
+                    <td>{{ booking.status }}</td>
+                    <td>{{ booking.created_at }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p>У вас пока нет бронирований.</p>
+{% endif %}
+<style>
+    .bookings-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    .bookings-table th, .bookings-table td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+    .bookings-table th { background-color: #f8f8f8; }
+</style>
+{% endblock %}
