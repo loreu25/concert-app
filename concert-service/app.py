@@ -1,6 +1,8 @@
 from flask import Flask, jsonify, request, render_template, redirect, url_for, flash, make_response, g
 import requests
 import jwt
+import pika
+import json
 
 from config import Config
 
@@ -27,12 +29,12 @@ def create_app():
 
     @app.route('/')
     def index():
-        return redirect(url_for('list_concerts_page'))
+        return redirect(url_for('list_concerts'))
 
-    @app.route('/concerts-page')
-    def list_concerts_page():
+    @app.route('/concerts')
+    def list_concerts():
         try:
-            response = requests.get(f"{ADMIN_URL}/concerts")
+            response = requests.get(f"{ADMIN_URL}/api/concerts")
             response.raise_for_status()
             concerts = response.json()
         except requests.exceptions.RequestException:
@@ -40,15 +42,25 @@ def create_app():
             flash('Не удалось загрузить афишу. Попробуйте позже.', 'danger')
         return render_template('index.html', concerts=concerts)
 
-    @app.route('/concerts-page/<int:concert_id>')
-    def concert_detail_page(concert_id):
+    @app.route('/concerts/<int:concert_id>')
+    def concert_detail(concert_id):
         try:
-            response = requests.get(f"{ADMIN_URL}/concerts/{concert_id}")
+            response = requests.get(f"{ADMIN_URL}/api/concerts/{concert_id}")
             response.raise_for_status()
             concert = response.json()
         except requests.exceptions.RequestException:
             return render_template('404.html'), 404
         return render_template('concert_detail.html', concert=concert)
+
+    @app.route('/artists/<int:artist_id>')
+    def artist_detail(artist_id):
+        try:
+            response = requests.get(f"{ADMIN_URL}/api/artists/{artist_id}")
+            response.raise_for_status()
+            artist = response.json()
+        except requests.exceptions.RequestException:
+            return render_template('404.html'), 404
+        return render_template('artist_detail.html', artist=artist)
 
     @app.route('/register', methods=['GET', 'POST'])
     def register():
@@ -72,7 +84,7 @@ def create_app():
             response = requests.post(f"{AUTH_URL}/login", json={'email': email, 'password': password})
             if response.status_code == 200:
                 access_token = response.json().get('access_token')
-                resp = make_response(redirect(url_for('list_concerts_page')))
+                resp = make_response(redirect(url_for('list_concerts')))
                 resp.set_cookie('access_token', access_token, httponly=True, samesite='Lax')
                 flash('Вы успешно вошли!', 'success')
                 return resp
@@ -82,13 +94,13 @@ def create_app():
 
     @app.route('/logout')
     def logout():
-        resp = make_response(redirect(url_for('list_concerts_page')))
+        resp = make_response(redirect(url_for('list_concerts')))
         resp.delete_cookie('access_token')
         flash('Вы вышли из аккаунта.', 'success')
         return resp
 
     @app.route('/create-booking/<int:concert_id>', methods=['POST'])
-    def create_booking_page(concert_id):
+    def create_booking(concert_id):
         if not g.user:
             flash('Пожалуйста, войдите, чтобы забронировать билеты.', 'danger')
             return redirect(url_for('login'))
@@ -97,28 +109,39 @@ def create_app():
         quantity = request.form.get('quantity')
 
         token = request.cookies.get('access_token')
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        }
         payload = {
             'concert_id': concert_id,
             'ticket_type_id': int(ticket_type_id),
             'quantity': int(quantity)
         }
 
-        response = requests.post(f"{ADMIN_URL}/bookings", json=payload, headers=headers)
+        try:
+            connection = pika.BlockingConnection(pika.ConnectionParameters('rabbitmq'))
+            channel = connection.channel()
+            channel.queue_declare(queue='booking_queue', durable=True)
 
-        if response.status_code == 201:
-            flash('Билеты успешно забронированы!', 'success')
-        else:
-            error = response.json().get('error', 'Не удалось забронировать билеты.')
-            flash(error, 'danger')
+            # Добавляем токен в сообщение для аутентификации
+            message_body = {
+                'token': token,
+                'payload': payload
+            }
+
+            channel.basic_publish(
+                exchange='',
+                routing_key='booking_queue',
+                body=json.dumps(message_body),
+                properties=pika.BasicProperties(
+                    delivery_mode=2,  # Сделать сообщение постоянным
+                ))
+            connection.close()
+            flash('Ваш запрос на бронирование принят в обработку!', 'info')
+        except pika.exceptions.AMQPConnectionError:
+            flash('Не удалось связаться с сервисом бронирования. Попробуйте позже.', 'danger')
         
-        return redirect(url_for('concert_detail_page', concert_id=concert_id))
+        return redirect(url_for('concert_detail', concert_id=concert_id))
 
     @app.route('/my-bookings')
-    def my_bookings_page():
+    def my_bookings():
         if not g.user:
             flash('Пожалуйста, войдите, чтобы просмотреть свои бронирования.', 'danger')
             return redirect(url_for('login'))
@@ -127,7 +150,7 @@ def create_app():
         headers = {'Authorization': f'Bearer {token}'}
         
         try:
-            response = requests.get(f"{ADMIN_URL}/my-bookings", headers=headers)
+            response = requests.get(f"{ADMIN_URL}/api/my-bookings", headers=headers)
             response.raise_for_status()
             bookings_raw = response.json()
             
@@ -135,7 +158,7 @@ def create_app():
             bookings = []
             for b in bookings_raw:
                 # Получаем детали концерта
-                concert_resp = requests.get(f"{ADMIN_URL}/concerts/{b['concert_id']}")
+                concert_resp = requests.get(f"{ADMIN_URL}/api/concerts/{b['concert_id']}")
                 concert_title = concert_resp.json().get('title', 'Неизвестный концерт') if concert_resp.ok else 'Неизвестный концерт'
                 
                 # Находим тип билета в данных концерта
@@ -163,9 +186,9 @@ def create_app():
 
     # --- JSON API Endpoints (for future use) ---
 
-    @app.route('/concerts', methods=['GET'])
-    def list_concerts():
-        response = requests.get(f"{ADMIN_URL}/concerts")
+    @app.route('/api/concerts', methods=['GET'])
+    def api_list_concerts_api():
+        response = requests.get(f"{ADMIN_URL}/api/concerts")
 
         concerts = response.json()
         data = []
@@ -193,9 +216,9 @@ def create_app():
             })
         return jsonify(data)
 
-    @app.route('/concerts/<int:concert_id>', methods=['GET'])
-    def get_concert(concert_id):
-        response = requests.get(f"{ADMIN_URL}/concerts/{concert_id}")
+    @app.route('/api/concerts/<int:concert_id>', methods=['GET'])
+    def api_get_concert_api(concert_id):
+        response = requests.get(f"{ADMIN_URL}/api/concerts/{concert_id}")
 
         if response.status_code == 404:
             return jsonify({"error": "Concert not found"}), 404
@@ -214,9 +237,9 @@ def create_app():
             "ticket_types": concert.get('ticket_types', [])
         })
     
-    @app.route('/artists', methods=['GET'])
-    def get_artists():
-        response = requests.get(f"{ADMIN_URL}/artists")
+    @app.route('/api/artists', methods=['GET'])
+    def api_get_artists_api():
+        response = requests.get(f"{ADMIN_URL}/api/artists")
 
         if response.status_code == 404:
             return jsonify({"error": "Artist not found"}), 404
@@ -236,31 +259,31 @@ def create_app():
             })
         return jsonify(data)
     
-    @app.route('/my-bookings', methods=['GET'])
-    def get_my_bookings():
+    @app.route('/api/my-bookings', methods=['GET'])
+    def api_get_my_bookings_api():
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return jsonify({"error": "Authorization header is missing"}), 401
 
         headers = {'Authorization': auth_header}
-        response = requests.get(f"{ADMIN_URL}/my-bookings", headers=headers)
+        response = requests.get(f"{ADMIN_URL}/api/my-bookings", headers=headers)
 
         return jsonify(response.json()), response.status_code
     
-    @app.route('/bookings', methods=['POST'])
-    def create_booking():
+    @app.route('/api/bookings', methods=['POST'])
+    def api_create_booking_api():
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return jsonify({"error": "Authorization header is missing"}), 401
 
         headers = {'Authorization': auth_header, 'Content-Type': 'application/json'}
-        response = requests.post(f"{ADMIN_URL}/bookings", json=request.json, headers=headers)
+        response = requests.post(f"{ADMIN_URL}/api/bookings", json=request.json, headers=headers)
 
         return jsonify(response.json()), response.status_code
     
-    @app.route('/artists/<int:artist_id>', methods=['GET'])
-    def get_artist(artist_id):
-        response = requests.get(f"{ADMIN_URL}/artists/{artist_id}")
+    @app.route('/api/artists/<int:artist_id>', methods=['GET'])
+    def api_get_artist_api(artist_id):
+        response = requests.get(f"{ADMIN_URL}/api/artists/{artist_id}")
 
         if response.status_code == 404:
             return jsonify({"error": "Artist not found"}), 404

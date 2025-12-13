@@ -4,6 +4,11 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt
 from werkzeug.utils import secure_filename
 from datetime import datetime
+import pika
+import json
+import threading
+import time
+from flask_jwt_extended import create_access_token, decode_token
 
 from config import Config
 from models import db, Concert, TicketType, Artist, Booking
@@ -44,7 +49,7 @@ def create_app():
 
         return decorated
 
-    @app.route('/admin/create_concert', methods=['POST'])
+    @app.route('/api/admin/create_concert', methods=['POST'])
     @admin_required
     def create_concert():
         data = request.json
@@ -83,7 +88,7 @@ def create_app():
 
         return jsonify({"message": "Concert registered"}), 201
 
-    @app.route('/concerts', methods=['GET'])
+    @app.route('/api/concerts', methods=['GET'])
     def list_concerts():
         concerts = Concert.query.all()
         data = []
@@ -93,7 +98,7 @@ def create_app():
                 "title": c.title,
                 "date": c.date.strftime('%Y-%m-%d %H:%M'),
                 "image_url": c.image_url,
-                "artists": [a.name for a in c.artists] or [],
+                "artists": [{"id": a.id, "name": a.name} for a in c.artists] or [],
                 "ticket_types": [
                     {
                         "id": t.id,
@@ -106,7 +111,7 @@ def create_app():
             })
         return jsonify(data)
 
-    @app.route('/concerts/<int:concert_id>', methods=['GET'])
+    @app.route('/api/concerts/<int:concert_id>', methods=['GET'])
     def get_concert(concert_id):
         concert = Concert.query.get(concert_id)
 
@@ -119,7 +124,7 @@ def create_app():
         "description": concert.description,
         "date": concert.date.isoformat() if concert.date else None,
         "image_url": concert.image_url,
-        "artists": [a.name for a in concert.artists],
+        "artists": [{"id": a.id, "name": a.name} for a in concert.artists],
         "ticket_types": [
             {
                 "id": t.id,
@@ -131,7 +136,7 @@ def create_app():
         ]
     })
 
-    @app.route('/admin/concerts/<int:concert_id>', methods=['PUT'])
+    @app.route('/api/admin/concerts/<int:concert_id>', methods=['PUT'])
     @admin_required
     def update_concert(concert_id):
         try:
@@ -186,7 +191,7 @@ def create_app():
             db.session.rollback()
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/admin/concerts/<int:concert_id>", methods=["DELETE"])
+    @app.route("/api/admin/concerts/<int:concert_id>", methods=["DELETE"])
     @admin_required
     def delete_concert(concert_id):
         try:
@@ -203,7 +208,7 @@ def create_app():
             db.session.rollback()
             return jsonify({"error": str(e)}), 500
 
-    @app.route('/admin/concerts/<int:concert_id>/ticket_types', methods=["POST"])
+    @app.route('/api/admin/concerts/<int:concert_id>/ticket_types', methods=["POST"])
     @admin_required
     def add_ticket_type(concert_id):
         concert = Concert.query.get(concert_id)
@@ -237,7 +242,7 @@ def create_app():
 
         return jsonify({"message": "Ticket type added successfully"}), 201
 
-    @app.route('/admin/concerts/<int:concert_id>/artists', methods=["POST"])
+    @app.route('/api/admin/concerts/<int:concert_id>/artists', methods=["POST"])
     @admin_required
     def create_artist(concert_id):
         concert = Concert.query.get(concert_id)
@@ -274,8 +279,29 @@ def create_app():
                 "name": artist.name
             }
         }), 201
+
+    @app.route('/api/admin/statistics', methods=['GET'])
+    @admin_required
+    def get_statistics():
+        total_revenue = db.session.query(db.func.sum(Booking.quantity * TicketType.price)) \
+            .join(TicketType, Booking.ticket_type_id == TicketType.id) \
+            .scalar() or 0
+
+        total_tickets_sold = db.session.query(db.func.sum(Booking.quantity)).scalar() or 0
+
+        active_concerts_count = Concert.query.filter(Concert.date >= datetime.utcnow()).count()
+
+        total_bookings = Booking.query.count()
+        average_booking_value = total_revenue / total_bookings if total_bookings > 0 else 0
+
+        return jsonify({
+            "total_revenue": float(total_revenue),
+            "total_tickets_sold": int(total_tickets_sold),
+            "active_concerts_count": active_concerts_count,
+            "average_booking_value": float(average_booking_value)
+        })
     
-    @app.route('/artists', methods=['GET'])
+    @app.route('/api/artists', methods=['GET'])
     def list_artists():
         artists = Artist.query.all()
         data = []
@@ -289,7 +315,7 @@ def create_app():
             })
         return jsonify(data)
     
-    @app.route('/my-bookings', methods=['GET'])
+    @app.route('/api/my-bookings', methods=['GET'])
     @jwt_required()
     def get_my_bookings():
         user_id = get_jwt()['sub']
@@ -309,7 +335,7 @@ def create_app():
         return jsonify(data)
 
 
-    @app.route('/bookings', methods=['POST'])
+    @app.route('/api/bookings', methods=['POST'])
     @jwt_required()
     def create_booking():
         data = request.json
@@ -358,7 +384,7 @@ def create_app():
         }), 201
 
 
-    @app.route('/artists/<int:artist_id>', methods=['GET'])
+    @app.route('/api/artists/<int:artist_id>', methods=['GET'])
     def get_artist(artist_id):
         artist = Artist.query.get(artist_id)
 
@@ -384,7 +410,7 @@ def create_app():
         })
 
 
-    @app.route("/admin/upload_image", methods=["POST"])
+    @app.route("/api/admin/upload_image", methods=["POST"])
     @admin_required
     def upload_image():
         if "image" not in request.files:
@@ -605,6 +631,70 @@ def create_app():
     return app
 
 
+def run_consumer():
+    while True:
+        try:
+            connection = pika.BlockingConnection(pika.ConnectionParameters('rabbitmq'))
+            channel = connection.channel()
+            channel.queue_declare(queue='booking_queue', durable=True)
+
+            def callback(ch, method, properties, body):
+                app = create_app()
+                with app.app_context():
+                    try:
+                        message = json.loads(body)
+                        token = message.get('token')
+                        payload_data = message.get('payload')
+
+                        # Декодируем токен, чтобы получить user_id
+                        decoded_token = decode_token(token)
+                        user_id = decoded_token['sub']
+
+                        concert_id = payload_data.get('concert_id')
+                        ticket_type_id = payload_data.get('ticket_type_id')
+                        quantity = payload_data.get('quantity')
+
+                        ticket_type = TicketType.query.get(ticket_type_id)
+                        if not ticket_type or ticket_type.concert_id != concert_id:
+                            print(f"[Consumer] Ticket type not found for this concert")
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            return
+
+                        booked_quantity = sum(b.quantity for b in ticket_type.bookings)
+                        available_quantity = ticket_type.total_quantity - booked_quantity
+
+                        if quantity > available_quantity:
+                            print(f"[Consumer] Not enough tickets available.")
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            return
+
+                        booking = Booking(
+                            user_id=user_id,
+                            concert_id=concert_id,
+                            ticket_type_id=ticket_type_id,
+                            quantity=quantity
+                        )
+                        db.session.add(booking)
+                        db.session.commit()
+                        print(f"[Consumer] Booking created successfully for user {user_id}")
+
+                    except Exception as e:
+                        print(f"[Consumer] Error processing message: {e}")
+                        # Здесь можно добавить логику для отправки сообщения в очередь "мертвых писем"
+
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
+
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue='booking_queue', on_message_callback=callback)
+            print('[Consumer] Waiting for messages. To exit press CTRL+C')
+            channel.start_consuming()
+
+        except pika.exceptions.AMQPConnectionError as e:
+            print(f"[Consumer] Connection failed, retrying in 5 seconds: {e}")
+            time.sleep(5)
+
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=5003, debug=True)
+    consumer_thread = threading.Thread(target=run_consumer, daemon=True)
+    consumer_thread.start()
+    app.run(host="0.0.0.0", port=5003, debug=False) # debug=False, чтобы избежать запуска двух consumer'ов

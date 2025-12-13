@@ -30,9 +30,9 @@
     <nav class="navbar">
         <a href="/" class="logo">TicketApp</a>
         <div>
-            <a href="/">Афиша</a>
+            <a class="nav-link" href="{{ url_for('list_concerts') }}">Афиша</a>
             {% if g.user %}
-                <a href="/my-bookings">Мои бронирования</a>
+                <a class="nav-link" href="{{ url_for('my_bookings') }}">Мои бронирования</a>
                 {% if g.user and g.user.role == 'admin' %}
                     <a href="/admin/dashboard" target="_blank">Админ-панель</a>
                 {% endif %}

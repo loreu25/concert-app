@@ -5,12 +5,23 @@
 <div class="concert-list">
     {% if concerts %}
         {% for concert in concerts %}
-        <a href="{{ url_for('concert_detail_page', concert_id=concert.id) }}" class="concert-card">
+        <a href="{{ url_for('concert_detail', concert_id=concert.id) }}" class="concert-link">
             <img src="{{ concert.image_url or 'https://via.placeholder.com/300x180.png?text=No+Image' }}" alt="{{ concert.title }}">
             <div class="concert-card-content">
                 <h3>{{ concert.title }}</h3>
                 <p><strong>Дата:</strong> {{ concert.date }}</p>
-                <p><strong>Артисты:</strong> {{ concert.artists|join(', ') if concert.artists else 'Не указаны' }}</p>
+                <p><strong>Артисты:</strong> 
+                    {% if concert.artists %}
+                        {% for artist in concert.artists %}
+                            <a href="{{ url_for('artist_detail', artist_id=artist.id) }}">{{ artist.name }}</a>{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    {% else %}
+                        Не указаны
+                    {% endif %}
+                </p>
+                <div class="buy-button-wrapper">
+                    <button class="buy-button">Купить билеты</button>
+                </div>
             </div>
         </a>
         {% endfor %}
@@ -28,9 +39,26 @@
         color: inherit;
     }
     .concert-card:hover { transform: translateY(-5px); }
-    .concert-card img { width: 100%; height: 180px; object-fit: cover; }
+    .concert-link img {
+        width: 100%;
+        height: 200px; /* Фиксированная высота */
+        object-fit: cover; /* Масштабирует изображение, сохраняя пропорции и обрезая лишнее */
+        display: block;
+    }
     .concert-card-content { padding: 15px; }
     .concert-card h3 { margin-top: 0; }
     .concert-card p { margin: 5px 0; color: #555; }
+    .buy-button-wrapper { margin-top: 15px; text-align: center; }
+    .buy-button { 
+        background-color: #007bff; 
+        color: white; 
+        padding: 10px 20px; 
+        border: none; 
+        border-radius: 5px; 
+        cursor: pointer; 
+        font-size: 1em; 
+        transition: background-color 0.2s;
+    }
+    .buy-button:hover { background-color: #0056b3; }
 </style>
 {% endblock %}
