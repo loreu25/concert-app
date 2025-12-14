@@ -6,3 +6,4 @@ Werkzeug==3.0.1
 requests==2.31.0
 flask_login
 flask_jwt_extended
+flasgger

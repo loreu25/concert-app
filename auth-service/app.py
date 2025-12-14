@@ -3,14 +3,36 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import jwt
 import os
+import logging
+from flasgger import Swagger
 
 from models import db, User, RefreshToken
 from config import Config
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+
+    # Инициализируем Swagger
+    swagger = Swagger(app, template={
+        "swagger": "2.0",
+        "info": {
+            "title": "Auth Service API",
+            "description": "API для аутентификации пользователей",
+            "version": "1.0.0"
+        },
+        "host": "localhost:5001",
+        "basePath": "/",
+        "schemes": ["http", "https"]
+    })
 
     db.init_app(app)
 
@@ -65,6 +87,39 @@ def create_app():
 
     @app.route("/register", methods=["POST"])
     def register():
+        """
+        Регистрация нового пользователя
+        ---
+        tags:
+          - Authentication
+        parameters:
+          - name: body
+            in: body
+            required: true
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "user@example.com"
+                password:
+                  type: string
+                  format: password
+                  example: "mypassword123"
+        responses:
+          201:
+            description: Пользователь успешно зарегистрирован
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                user_id:
+                  type: integer
+          400:
+            description: Email уже зарегистрирован или некорректные данные
+        """
         data = request.json
         email = data.get("email")
         password = data.get("password")
@@ -119,6 +174,23 @@ def create_app():
 
         new_access = create_access_token(payload["user_id"])
         return jsonify({"access_token": new_access})
+
+    # Глобальный обработчик ошибок
+    @app.errorhandler(Exception)
+    def handle_exception(error):
+        logger.error(f"Unhandled exception: {str(error)}", exc_info=True)
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(error)
+        }), 500
+
+    @app.errorhandler(404)
+    def not_found(error):
+        return jsonify({"error": "Not found"}), 404
+
+    @app.errorhandler(400)
+    def bad_request(error):
+        return jsonify({"error": "Bad request"}), 400
 
     return app
 

@@ -1,5 +1,48 @@
 {% extends "admin_base.html" %}
 {% block content %}
+<h1>Панель администратора</h1>
+
+<div class="stats-container">
+    <h2>Общая статистика</h2>
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Общая выручка</h3>
+            <p id="total-revenue">-</p>
+        </div>
+        <div class="stat-card">
+            <h3>Продано билетов</h3>
+            <p id="total-tickets-sold">-</p>
+        </div>
+        <div class="stat-card">
+            <h3>Активных концертов</h3>
+            <p id="active-concerts">-</p>
+        </div>
+        <div class="stat-card">
+            <h3>Средний чек</h3>
+            <p id="avg-booking-value">-</p>
+        </div>
+    </div>
+</div>
+
+<hr>
+
+<h2>Аналитика по концертам</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Концерт</th>
+            <th>Заполняемость (%)</th>
+            <th>Выручка</th>
+            <th>Популярный билет</th>
+        </tr>
+    </thead>
+    <tbody id="concert-stats-body">
+        <!-- Data will be inserted here by JS -->
+    </tbody>
+</table>
+
+<hr>
+
 <h1>Управление концертами</h1>
 <div class="form-container">
     <h2>Создать новый концерт</h2>
@@ -59,4 +102,50 @@
         {% endfor %}
     </tbody>
 </table>
+<style>
+    .stats-container { margin-bottom: 30px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+    .stat-card { background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; padding: 20px; text-align: center; }
+    .stat-card h3 { margin-top: 0; font-size: 1.1em; color: #555; }
+    .stat-card p { font-size: 2em; font-weight: bold; color: #333; margin: 10px 0 0 0; }
+</style>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Fetch general statistics
+        fetch('/api/admin/statistics')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('total-revenue').textContent = data.total_revenue.toLocaleString('ru-RU') + ' руб.';
+                document.getElementById('total-tickets-sold').textContent = data.total_tickets_sold;
+                document.getElementById('active-concerts').textContent = data.active_concerts_count;
+                document.getElementById('avg-booking-value').textContent = data.average_booking_value.toLocaleString('ru-RU') + ' руб.';
+            })
+            .catch(error => console.error('Error fetching statistics:', error));
+
+        // Fetch concert statistics
+        fetch('/api/admin/statistics/concerts')
+            .then(response => response.json())
+            .then(data => {
+                const tableBody = document.getElementById('concert-stats-body');
+                if (data.length === 0) {
+                    tableBody.innerHTML = '<tr><td colspan="4" style="text-align: center;">Нет данных для отображения.</td></tr>';
+                    return;
+                }
+                let rows = '';
+                data.forEach(concert => {
+                    rows += `
+                        <tr>
+                            <td>${concert.title}</td>
+                            <td>${concert.occupancy}</td>
+                            <td>${concert.total_revenue.toLocaleString('ru-RU')} руб.</td>
+                            <td>${concert.most_popular_ticket_type}</td>
+                        </tr>
+                    `;
+                });
+                tableBody.innerHTML = rows;
+            })
+            .catch(error => console.error('Error fetching concert statistics:', error));
+    });
+</script>
 {% endblock %}

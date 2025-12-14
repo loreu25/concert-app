@@ -8,10 +8,19 @@ import pika
 import json
 import threading
 import time
+import logging
 from flask_jwt_extended import create_access_token, decode_token
+from flasgger import Swagger
 
 from config import Config
 from models import db, Concert, TicketType, Artist, Booking
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
@@ -29,6 +38,25 @@ def create_app():
     app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
     app.config["JWT_COOKIE_CSRF_PROTECT"] = False # В реальном приложении лучше включить
     jwt = JWTManager(app)
+    
+    # Инициализируем Swagger для документации API
+    app.config['JSON_SORT_KEYS'] = False
+    swagger_config = {
+        "headers": [],
+        "specs": [
+            {
+                "endpoint": 'apispec',
+                "route": '/apispec.json',
+                "rule_filter": lambda rule: True,
+                "model_filter": lambda tag: True,
+            }
+        ],
+        "static_url_path": "/flasgger_static",
+        "swagger_ui": True,
+        "specs_route": "/apidocs/"
+    }
+    swagger = Swagger(app, config=swagger_config)
+
     # Создаем папку для загрузок, если нет
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
@@ -52,6 +80,53 @@ def create_app():
     @app.route('/api/admin/create_concert', methods=['POST'])
     @admin_required
     def create_concert():
+        """
+        Создание нового концерта
+        ---
+        tags:
+          - Concerts
+        parameters:
+          - name: body
+            in: body
+            required: true
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: "Metallica - Master of Puppets Tour"
+                description:
+                  type: string
+                  example: "Epic concert by Metallica"
+                date:
+                  type: string
+                  format: date-time
+                  example: "2025-12-25 20:00"
+                image_url:
+                  type: string
+                  example: "https://example.com/image.jpg"
+                artist_ids:
+                  type: array
+                  items:
+                    type: integer
+                  example: [1, 2, 3]
+        responses:
+          201:
+            description: Концерт успешно создан
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                title:
+                  type: string
+                date:
+                  type: string
+          400:
+            description: Ошибка валидации
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         data = request.json
         title = data.get("title")
         description = data.get("description")
@@ -60,14 +135,17 @@ def create_app():
         artist_ids = data.get("artist_ids", [])
 
         if not title or not date_str:
+            logger.warning(f"Create concert failed: missing required fields")
             return jsonify({"error": "Title and date are required"}), 400
 
         try:
             date = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
         except ValueError:
+            logger.error(f"Invalid date format: {date_str}")
             return jsonify({"error": "Invalid date format. Use YYYY-MM-DD HH:MM"}), 400
 
         if Concert.query.filter_by(title=title).first():
+            logger.warning(f"Concert already exists: {title}")
             return jsonify({"error": "Concert already exists"}), 400
 
         concert = Concert(
@@ -300,6 +378,44 @@ def create_app():
             "active_concerts_count": active_concerts_count,
             "average_booking_value": float(average_booking_value)
         })
+
+    @app.route('/api/admin/statistics/concerts', methods=['GET'])
+    @admin_required
+    def get_concert_statistics():
+        concerts = Concert.query.all()
+        concert_stats = []
+
+        for concert in concerts:
+            total_tickets_available = db.session.query(db.func.sum(TicketType.total_quantity)).filter(TicketType.concert_id == concert.id).scalar() or 0
+            total_tickets_sold = db.session.query(db.func.sum(Booking.quantity)).filter(Booking.concert_id == concert.id).scalar() or 0
+            
+            occupancy = (total_tickets_sold / total_tickets_available * 100) if total_tickets_available > 0 else 0
+            
+            revenue = db.session.query(db.func.sum(Booking.quantity * TicketType.price)) \
+                .join(TicketType, Booking.ticket_type_id == TicketType.id) \
+                .filter(Booking.concert_id == concert.id).scalar() or 0
+
+            popular_ticket_query = db.session.query(
+                    TicketType.type,
+                    db.func.sum(Booking.quantity).label('total_sold')
+                ) \
+                .join(Booking, TicketType.id == Booking.ticket_type_id) \
+                .filter(TicketType.concert_id == concert.id) \
+                .group_by(TicketType.type) \
+                .order_by(db.desc('total_sold')) \
+                .first()
+
+            most_popular_ticket = popular_ticket_query[0] if popular_ticket_query else "-"
+
+            concert_stats.append({
+                "id": concert.id,
+                "title": concert.title,
+                "occupancy": round(occupancy, 2),
+                "total_revenue": float(revenue),
+                "most_popular_ticket_type": most_popular_ticket
+            })
+
+        return jsonify(concert_stats)
     
     @app.route('/api/artists', methods=['GET'])
     def list_artists():
@@ -627,6 +743,23 @@ def create_app():
         db.session.delete(ticket)
         db.session.commit()
         return redirect(url_for('manage_tickets', concert_id=concert_id))
+
+    # Глобальный обработчик ошибок
+    @app.errorhandler(Exception)
+    def handle_exception(error):
+        logger.error(f"Unhandled exception: {str(error)}", exc_info=True)
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(error)
+        }), 500
+
+    @app.errorhandler(404)
+    def not_found(error):
+        return jsonify({"error": "Not found"}), 404
+
+    @app.errorhandler(400)
+    def bad_request(error):
+        return jsonify({"error": "Bad request"}), 400
 
     return app
 
