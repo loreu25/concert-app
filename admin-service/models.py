@@ -57,7 +57,7 @@ class TicketType(db.Model):
     type = db.Column(db.String(50), nullable=False)        # например: "VIP", "Стандарт", "Партер"
     price = db.Column(db.Numeric(10, 2), nullable=False)
     total_quantity = db.Column(db.Integer, nullable=False)
-    # available_quantity можно считать через подсчёт бронирований
+    
 
     concert = db.relationship('Concert', back_populates='ticket_types')
     bookings = db.relationship('Booking', back_populates='ticket_type')

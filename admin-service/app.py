@@ -1,12 +1,25 @@
 import os
 import flask
+import logging
+import pika
+import json
+import threading
+import time
 from flask import Flask, request, jsonify
-from flask_jwt_extended import JWTManager, jwt_required, get_jwt
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt, decode_token
 from werkzeug.utils import secure_filename
 from datetime import datetime
+from flasgger import Swagger
 
 from config import Config
 from models import db, Concert, TicketType, Artist, Booking
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
@@ -18,7 +31,26 @@ def allowed_file(filename):
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    app.config['JSON_SORT_KEYS'] = False
     jwt = JWTManager(app)
+    
+    # Инициализируем Swagger для документации API
+    swagger_config = {
+        "headers": [],
+        "specs": [
+            {
+                "endpoint": 'apispec',
+                "route": '/apispec.json',
+                "rule_filter": lambda rule: True,
+                "model_filter": lambda tag: True,
+            }
+        ],
+        "static_url_path": "/flasgger_static",
+        "swagger_ui": True,
+        "specs_route": "/apidocs/"
+    }
+    swagger = Swagger(app, config=swagger_config)
+    
     # Создаем папку для загрузок, если нет
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
@@ -42,6 +74,44 @@ def create_app():
     @app.route('/admin/create_concert', methods=['POST'])
     @admin_required
     def create_concert():
+        """
+        Создание нового концерта
+        ---
+        tags:
+          - Concerts
+        parameters:
+          - name: body
+            in: body
+            required: true
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: "Metallica - Master of Puppets Tour"
+                description:
+                  type: string
+                  example: "Epic concert by Metallica"
+                date:
+                  type: string
+                  format: date-time
+                  example: "2025-12-25 20:00"
+                image_url:
+                  type: string
+                  example: "https://example.com/image.jpg"
+                artist_ids:
+                  type: array
+                  items:
+                    type: integer
+                  example: [1, 2, 3]
+        responses:
+          201:
+            description: Концерт успешно создан
+          400:
+            description: Ошибка валидации
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         data = request.json
         title = data.get("title")
         description = data.get("description")
@@ -80,6 +150,35 @@ def create_app():
 
     @app.route('/concerts', methods=['GET'])
     def list_concerts():
+        """
+        Получить список всех концертов
+        ---
+        tags:
+          - Concerts
+        responses:
+          200:
+            description: Список всех концертов
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  title:
+                    type: string
+                  date:
+                    type: string
+                    format: date-time
+                  image_url:
+                    type: string
+                  artists:
+                    type: array
+                    items:
+                      type: string
+                  ticket_types:
+                    type: array
+        """
         concerts = Concert.query.all()
         data = []
         for c in concerts:
@@ -103,6 +202,43 @@ def create_app():
 
     @app.route('/concerts/<int:concert_id>', methods=['GET'])
     def get_concert(concert_id):
+        """
+        Получить информацию о конкретном концерте
+        ---
+        tags:
+          - Concerts
+        parameters:
+          - in: path
+            name: concert_id
+            type: integer
+            required: true
+            description: ID концерта
+        responses:
+          200:
+            description: Информация о концерте
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                title:
+                  type: string
+                description:
+                  type: string
+                date:
+                  type: string
+                  format: date-time
+                image_url:
+                  type: string
+                artists:
+                  type: array
+                  items:
+                    type: string
+                ticket_types:
+                  type: array
+          404:
+            description: Концерт не найден
+        """
         concert = Concert.query.get(concert_id)
 
         if not concert:
@@ -129,6 +265,47 @@ def create_app():
     @app.route('/admin/concerts/<int:concert_id>', methods=['PUT'])
     @admin_required
     def update_concert(concert_id):
+        """
+        Обновить информацию о концерте
+        ---
+        tags:
+          - Concerts
+        parameters:
+          - in: path
+            name: concert_id
+            type: integer
+            required: true
+            description: ID концерта
+          - in: body
+            name: body
+            required: true
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                date:
+                  type: string
+                  format: date-time
+                  example: "2025-12-25 20:00"
+                image_url:
+                  type: string
+                artists:
+                  type: array
+                  items:
+                    type: integer
+        responses:
+          200:
+            description: Концерт успешно обновлён
+          400:
+            description: Ошибка валидации
+          404:
+            description: Концерт не найден
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         try:
             concert = Concert.query.get(concert_id)
             if not concert:
@@ -184,6 +361,25 @@ def create_app():
     @app.route("/admin/concerts/<int:concert_id>", methods=["DELETE"])
     @admin_required
     def delete_concert(concert_id):
+        """
+        Удалить концерт
+        ---
+        tags:
+          - Concerts
+        parameters:
+          - in: path
+            name: concert_id
+            type: integer
+            required: true
+            description: ID концерта
+        responses:
+          200:
+            description: Концерт успешно удалён
+          404:
+            description: Концерт не найден
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         try:
             concert = Concert.query.get(concert_id)
             if not concert:
@@ -201,6 +397,42 @@ def create_app():
     @app.route('/admin/concerts/<int:concert_id>/ticket_types', methods=["POST"])
     @admin_required
     def add_ticket_type(concert_id):
+        """
+        Добавить тип билета к концерту
+        ---
+        tags:
+          - Ticket Types
+        parameters:
+          - in: path
+            name: concert_id
+            type: integer
+            required: true
+            description: ID концерта
+          - in: body
+            name: body
+            required: true
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  example: "VIP"
+                price:
+                  type: number
+                  example: 150.00
+                total_quantity:
+                  type: integer
+                  example: 100
+        responses:
+          201:
+            description: Тип билета успешно добавлен
+          400:
+            description: Ошибка валидации
+          404:
+            description: Концерт не найден
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         concert = Concert.query.get(concert_id)
 
         if not concert:
@@ -232,13 +464,41 @@ def create_app():
 
         return jsonify({"message": "Ticket type added successfully"}), 201
 
-    @app.route('/admin/concerts/<int:concert_id>/artists', methods=["POST"])
+    @app.route('/admin/artists', methods=["POST"])
     @admin_required
-    def create_artist(concert_id):
-        concert = Concert.query.get(concert_id)
-        if not concert:
-            return jsonify({"error": "Concert not found"}), 404
-
+    def create_artist():
+        """
+        Создание нового артиста
+        ---
+        tags:
+          - Artists
+        parameters:
+          - name: body
+            in: body
+            required: true
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "Metallica"
+                description:
+                  type: string
+                  example: "Legendary heavy metal band"
+                genre:
+                  type: string
+                  example: "Heavy Metal"
+                image_url:
+                  type: string
+                  example: "https://example.com/metallica.jpg"
+        responses:
+          201:
+            description: Артист успешно создан
+          400:
+            description: Ошибка валидации
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         data = request.json
         name = data.get("name")
         description = data.get("description")
@@ -246,10 +506,12 @@ def create_app():
         image_url = data.get("image_url")
 
         if not all([name, description, genre, image_url]):
+            logger.warning("Create artist failed: missing required fields")
             return jsonify({"error": "Name, description, image_url and genre are required"}), 400
 
         if Artist.query.filter_by(name=name).first():
-            return jsonify({"error": "Concert already exists"}), 400
+            logger.warning(f"Artist already exists: {name}")
+            return jsonify({"error": "Artist already exists"}), 400
 
         artist = Artist(
             name=name,
@@ -258,20 +520,45 @@ def create_app():
             image_url=image_url
         )
 
-        concert.artists.append(artist)  # Связываем артиста с концертом
         db.session.add(artist)
         db.session.commit()
+        logger.info(f"Artist created: {artist.id} - {name}")
 
         return jsonify({
             "message": "Artist added successfully",
             "artist": {
                 "id": artist.id,
-                "name": artist.name
+                "name": artist.name,
+                "genre": artist.genre
             }
         }), 201
     
     @app.route('/artists', methods=['GET'])
     def list_artists():
+        """
+        Get all artists
+        ---
+        tags:
+          - Artists
+        responses:
+          200:
+            description: List of all artists
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  description:
+                    type: string
+                  genre:
+                    type: string
+                  image_url:
+                    type: string
+        """
         artists = Artist.query.all()
         data = []
         for a in artists:
@@ -284,9 +571,85 @@ def create_app():
             })
         return jsonify(data)
     
+    @app.route('/artists/<int:artist_id>', methods=['GET'])
+    def get_artist(artist_id):
+        """
+        Get artist by ID
+        ---
+        tags:
+          - Artists
+        parameters:
+          - in: path
+            name: artist_id
+            type: integer
+            required: true
+            description: Artist ID
+        responses:
+          200:
+            description: Artist details
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                name:
+                  type: string
+                description:
+                  type: string
+                genre:
+                  type: string
+                image_url:
+                  type: string
+          404:
+            description: Artist not found
+        """
+        artist = Artist.query.get(artist_id)
+        if not artist:
+            logger.warning(f"Artist {artist_id} not found")
+            return jsonify({"error": "Artist not found"}), 404
+        
+        return jsonify({
+            "id": artist.id,
+            "name": artist.name,
+            "description": artist.description,
+            "genre": artist.genre,
+            "image_url": artist.image_url
+        })
+    
     @app.route('/my-bookings', methods=['GET'])
     @jwt_required()
     def get_my_bookings():
+        """
+        Получить мои бронирования
+        ---
+        tags:
+          - Bookings
+        security:
+          - Bearer: []
+        responses:
+          200:
+            description: Список бронирований текущего пользователя
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  concert_id:
+                    type: integer
+                  ticket_type_id:
+                    type: integer
+                  quantity:
+                    type: integer
+                  status:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+          401:
+            description: Требуется аутентификация
+        """
         user_id = get_jwt()['sub']
         bookings = Booking.query.filter_by(user_id=user_id).all()
 
@@ -307,6 +670,46 @@ def create_app():
     @app.route('/bookings', methods=['POST'])
     @jwt_required()
     def create_booking():
+        """
+        Создать новое бронирование
+        ---
+        tags:
+          - Bookings
+        security:
+          - Bearer: []
+        parameters:
+          - in: body
+            name: body
+            required: true
+            schema:
+              type: object
+              properties:
+                concert_id:
+                  type: integer
+                  example: 1
+                ticket_type_id:
+                  type: integer
+                  example: 1
+                quantity:
+                  type: integer
+                  example: 2
+        responses:
+          201:
+            description: Бронирование успешно создано
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                booking:
+                  type: object
+          400:
+            description: Ошибка валидации (недостаточно билетов или невернные параметры)
+          404:
+            description: Концерт или тип билета не найден
+          401:
+            description: Требуется аутентификация
+        """
         data = request.json
         concert_id = data.get('concert_id')
         ticket_type_id = data.get('ticket_type_id')
@@ -353,64 +756,415 @@ def create_app():
         }), 201
 
 
-    @app.route('/artists/<int:artist_id>', methods=['GET'])
-    def get_artist(artist_id):
-        artist = Artist.query.get(artist_id)
+    @app.route('/admin/statistics', methods=['GET'])
+    @admin_required
+    def get_statistics():
+        """
+        Получение общей статистики по системе
+        ---
+        tags:
+          - Statistics
+        responses:
+          200:
+            description: Общая статистика системы
+            schema:
+              type: object
+              properties:
+                total_revenue:
+                  type: number
+                  example: 15000.50
+                total_tickets_sold:
+                  type: integer
+                  example: 245
+                active_concerts_count:
+                  type: integer
+                  example: 12
+                average_booking_value:
+                  type: number
+                  example: 61.22
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
+        try:
+            # Общая выручка
+            total_revenue = db.session.query(db.func.sum(Booking.quantity * TicketType.price)) \
+                .join(TicketType, Booking.ticket_type_id == TicketType.id) \
+                .scalar() or 0
 
-        if not artist:
-            return jsonify({"error": "Artist not found"}), 404
+            # Всего продано билетов
+            total_tickets_sold = db.session.query(db.func.sum(Booking.quantity)).scalar() or 0
 
-        concerts_data = []
-        for concert in artist.concerts:
-            concerts_data.append({
-                "id": concert.id,
-                "title": concert.title,
-                "date": concert.date.strftime('%Y-%m-%d %H:%M'),
-                "image_url": concert.image_url
-            })
+            # Активных концертов (дата больше текущей)
+            active_concerts_count = Concert.query.filter(Concert.date >= datetime.utcnow()).count()
 
-        return jsonify({
-            "id": artist.id,
-            "name": artist.name,
-            "description": artist.description,
-            "genre": artist.genre,
-            "image_url": artist.image_url,
-            "concerts": concerts_data
-        })
+            # Среднее значение бронирования
+            total_bookings = Booking.query.count()
+            average_booking_value = float(total_revenue) / total_bookings if total_bookings > 0 else 0
 
+            logger.info("Statistics retrieved successfully")
+
+            return jsonify({
+                "total_revenue": float(total_revenue),
+                "total_tickets_sold": int(total_tickets_sold),
+                "active_concerts_count": active_concerts_count,
+                "total_bookings": total_bookings,
+                "average_booking_value": round(average_booking_value, 2)
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Failed to get statistics: {str(e)}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/admin/statistics/concerts', methods=['GET'])
+    @admin_required
+    def get_concert_statistics():
+        """
+        Получение статистики по каждому концерту
+        ---
+        tags:
+          - Statistics
+        responses:
+          200:
+            description: Статистика по всем концертам
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  title:
+                    type: string
+                  date:
+                    type: string
+                  occupancy_percent:
+                    type: number
+                  total_revenue:
+                    type: number
+                  tickets_sold:
+                    type: integer
+                  most_popular_ticket_type:
+                    type: string
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
+        try:
+            concerts = Concert.query.all()
+            concert_stats = []
+
+            for concert in concerts:
+                # Всего доступных билетов
+                total_tickets_available = db.session.query(db.func.sum(TicketType.total_quantity)) \
+                    .filter(TicketType.concert_id == concert.id).scalar() or 0
+
+                # Продано билетов
+                total_tickets_sold = db.session.query(db.func.sum(Booking.quantity)) \
+                    .filter(Booking.concert_id == concert.id).scalar() or 0
+
+                # Заполненность в процентах
+                occupancy = (float(total_tickets_sold) / float(total_tickets_available) * 100) \
+                    if total_tickets_available > 0 else 0
+
+                # Выручка по концерту
+                revenue = db.session.query(db.func.sum(Booking.quantity * TicketType.price)) \
+                    .join(TicketType, Booking.ticket_type_id == TicketType.id) \
+                    .filter(Booking.concert_id == concert.id).scalar() or 0
+
+                # Самый популярный тип билета
+                popular_ticket_query = db.session.query(
+                    TicketType.type,
+                    db.func.sum(Booking.quantity).label('total_sold')
+                ) \
+                    .join(Booking, TicketType.id == Booking.ticket_type_id) \
+                    .filter(TicketType.concert_id == concert.id) \
+                    .group_by(TicketType.type) \
+                    .order_by(db.desc('total_sold')) \
+                    .first()
+
+                most_popular_ticket = popular_ticket_query[0] if popular_ticket_query else "N/A"
+
+                concert_stats.append({
+                    "id": concert.id,
+                    "title": concert.title,
+                    "date": concert.date.strftime('%Y-%m-%d %H:%M'),
+                    "occupancy_percent": round(occupancy, 2),
+                    "total_revenue": float(revenue),
+                    "tickets_sold": int(total_tickets_sold),
+                    "tickets_available": int(total_tickets_available),
+                    "most_popular_ticket_type": most_popular_ticket
+                })
+
+            logger.info(f"Concert statistics retrieved for {len(concert_stats)} concerts")
+            return jsonify(concert_stats), 200
+
+        except Exception as e:
+            logger.error(f"Failed to get concert statistics: {str(e)}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
 
     @app.route("/admin/upload_image", methods=["POST"])
     @admin_required
     def upload_image():
+        """
+        Загрузка изображения (для концертов и артистов)
+        ---
+        tags:
+          - Files
+        consumes:
+          - multipart/form-data
+        parameters:
+          - name: image
+            in: formData
+            type: file
+            required: true
+            description: Изображение (PNG, JPG, JPEG, WEBP)
+        responses:
+          200:
+            description: Изображение успешно загружено
+            schema:
+              type: object
+              properties:
+                image_url:
+                  type: string
+                  example: "http://localhost/admin/static/image.jpg"
+          400:
+            description: Ошибка - файл отсутствует или недопустимый формат
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         if "image" not in request.files:
+            logger.warning("Upload image failed: No file part in request")
             return jsonify({"error": "No file part"}), 400
 
         file = request.files["image"]
 
         if file.filename == "":
+            logger.warning("Upload image failed: No selected file")
             return jsonify({"error": "No selected file"}), 400
 
         if not allowed_file(file.filename):
-            return jsonify({"error": "Invalid file type"}), 400
+            logger.warning(f"Upload image failed: Invalid file type - {file.filename}")
+            return jsonify({"error": "Invalid file type. Allowed: png, jpg, jpeg, webp"}), 400
 
-        filename = secure_filename(file.filename)
-        save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        file.save(save_path)
+        try:
+            filename = secure_filename(file.filename)
+            save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+            file.save(save_path)
 
-        # URL для доступа к файлу
-        image_url = f"http://localhost:5003/static/{filename}"
+            # URL для доступа к файлу через Nginx
+            image_url = f"http://localhost/admin/static/{filename}"
+            logger.info(f"Image uploaded successfully: {filename}")
 
-        return jsonify({"image_url": image_url}), 200
+            return jsonify({"image_url": image_url}), 200
+        except Exception as e:
+            logger.error(f"Upload image failed: {str(e)}", exc_info=True)
+            return jsonify({"error": f"Failed to upload image: {str(e)}"}), 500
 
     # Раздаем статические файлы из папки uploads
     @app.route('/admin/static/<path:filename>')
     @admin_required
     def static_files(filename):
+        """
+        Получить загруженный файл (изображение)
+        ---
+        tags:
+          - Files
+        parameters:
+          - in: path
+            name: filename
+            type: string
+            required: true
+            description: Имя файла
+        responses:
+          200:
+            description: Файл найден и возвращён
+          404:
+            description: Файл не найден
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
         return flask.send_from_directory(app.config["UPLOAD_FOLDER"], filename)
+
+    @app.route('/admin/artists/<int:artist_id>', methods=['PUT'])
+    @admin_required
+    def update_artist(artist_id):
+        """
+        Обновление информации об артисте
+        ---
+        tags:
+          - Artists
+        parameters:
+          - name: artist_id
+            in: path
+            type: integer
+            required: true
+          - name: body
+            in: body
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                genre:
+                  type: string
+                image_url:
+                  type: string
+        responses:
+          200:
+            description: Артист успешно обновлён
+          404:
+            description: Артист не найден
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
+        artist = Artist.query.get(artist_id)
+        if not artist:
+            return jsonify({"error": "Artist not found"}), 404
+
+        data = request.json
+        if 'name' in data:
+            artist.name = data['name']
+        if 'description' in data:
+            artist.description = data['description']
+        if 'genre' in data:
+            artist.genre = data['genre']
+        if 'image_url' in data:
+            artist.image_url = data['image_url']
+
+        db.session.commit()
+        logger.info(f"Artist updated: {artist_id}")
+
+        return jsonify({
+            "message": "Artist updated successfully",
+            "artist": {
+                "id": artist.id,
+                "name": artist.name,
+                "genre": artist.genre
+            }
+        }), 200
+
+    @app.route('/admin/artists/<int:artist_id>', methods=['DELETE'])
+    @admin_required
+    def delete_artist(artist_id):
+        """
+        Удаление артиста
+        ---
+        tags:
+          - Artists
+        parameters:
+          - name: artist_id
+            in: path
+            type: integer
+            required: true
+        responses:
+          200:
+            description: Артист успешно удалён
+          404:
+            description: Артист не найден
+          403:
+            description: Доступ запрещён (требуется роль admin)
+        """
+        artist = Artist.query.get(artist_id)
+        if not artist:
+            return jsonify({"error": "Artist not found"}), 404
+
+        db.session.delete(artist)
+        db.session.commit()
+        logger.info(f"Artist deleted: {artist_id}")
+
+        return jsonify({"message": "Artist deleted successfully"}), 200
+
+    # Глобальные обработчики ошибок
+    @app.errorhandler(Exception)
+    def handle_exception(error):
+        logger.error(f"Unhandled exception: {str(error)}", exc_info=True)
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(error)
+        }), 500
+
+    @app.errorhandler(404)
+    def not_found(error):
+        return jsonify({"error": "Not found"}), 404
+
+    @app.errorhandler(400)
+    def bad_request(error):
+        return jsonify({"error": "Bad request"}), 400
 
     return app
 
 
+def run_consumer():
+    """
+    RabbitMQ Consumer для асинхронной обработки бронирований
+    """
+    while True:
+        try:
+            connection = pika.BlockingConnection(pika.ConnectionParameters('rabbitmq'))
+            channel = connection.channel()
+            channel.queue_declare(queue='booking_queue', durable=True)
+
+            def callback(ch, method, properties, body):
+                app = create_app()
+                with app.app_context():
+                    try:
+                        message = json.loads(body)
+                        token = message.get('token')
+                        payload_data = message.get('payload')
+
+                        # Декодируем токен для получения user_id
+                        decoded_token = decode_token(token)
+                        user_id = decoded_token['sub']
+
+                        concert_id = payload_data.get('concert_id')
+                        ticket_type_id = payload_data.get('ticket_type_id')
+                        quantity = payload_data.get('quantity')
+
+                        ticket_type = TicketType.query.get(ticket_type_id)
+                        if not ticket_type or ticket_type.concert_id != concert_id:
+                            logger.warning(f"[Consumer] Ticket type not found for concert {concert_id}")
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            return
+
+                        booked_quantity = sum(b.quantity for b in ticket_type.bookings)
+                        available_quantity = ticket_type.total_quantity - booked_quantity
+
+                        if quantity > available_quantity:
+                            logger.warning(f"[Consumer] Not enough tickets. Available: {available_quantity}")
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            return
+
+                        booking = Booking(
+                            user_id=user_id,
+                            concert_id=concert_id,
+                            ticket_type_id=ticket_type_id,
+                            quantity=quantity
+                        )
+                        db.session.add(booking)
+                        db.session.commit()
+                        logger.info(f"[Consumer] Booking created: user_id={user_id}, concert_id={concert_id}, qty={quantity}")
+
+                    except Exception as e:
+                        logger.error(f"[Consumer] Error processing message: {e}", exc_info=True)
+
+                    finally:
+                        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue='booking_queue', on_message_callback=callback)
+            logger.info('[Consumer] Waiting for messages...')
+            channel.start_consuming()
+
+        except pika.exceptions.AMQPConnectionError as e:
+            logger.error(f"[Consumer] Connection failed, retrying in 5 seconds: {e}")
+            time.sleep(5)
+
+
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=5003, debug=True)
+    # Запускаем RabbitMQ consumer в отдельном потоке
+    consumer_thread = threading.Thread(target=run_consumer, daemon=True)
+    consumer_thread.start()
+    logger.info("Starting admin-service on port 5003")
+    app.run(host="0.0.0.0", port=5003, debug=False)  # debug=False чтобы избежать запуска двух процессов
