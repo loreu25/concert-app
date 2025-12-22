@@ -79,7 +79,7 @@ def create_app():
             data.append({
                 "id": c["id"],
                 "title": c["title"],
-                "date": c["date"],  # admin-service уже возвращает строку
+                "date": c["date"],
                 "image": c.get("image_url"),
                 "artists": artists or ["Не указан"],
                 "ticket_types": tickets_data

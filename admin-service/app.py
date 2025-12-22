@@ -5,6 +5,7 @@ import pika
 import json
 import threading
 import time
+import uuid
 from flask import Flask, request, jsonify
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt, decode_token
 from werkzeug.utils import secure_filename
@@ -51,7 +52,6 @@ def create_app():
     }
     swagger = Swagger(app, config=swagger_config)
     
-    # Создаем папку для загрузок, если нет
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
     db.init_app(app)
@@ -108,7 +108,7 @@ def create_app():
           201:
             description: Концерт успешно создан
           400:
-            description: Ошибка валидации
+            description: Ошибка валидации (дата в прошлом, неверный формат или концерт уже существует)
           403:
             description: Доступ запрещён (требуется роль admin)
         """
@@ -126,6 +126,9 @@ def create_app():
             date = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
         except ValueError:
             return jsonify({"error": "Invalid date format. Use YYYY-MM-DD HH:MM"}), 400
+
+        if date <= datetime.utcnow():
+            return jsonify({"error": "Concert date must be in the future"}), 400
 
         if Concert.query.filter_by(title=title).first():
             return jsonify({"error": "Concert already exists"}), 400
@@ -315,7 +318,6 @@ def create_app():
             if not data:
                 return jsonify({"error": "No data provided"}), 400
 
-            # Обновление простых полей
             if 'title' in data:
                 concert.title = data['title']
             if 'description' in data:
@@ -328,7 +330,6 @@ def create_app():
             if 'image_url' in data:
                 concert.image_url = data['image_url']
 
-            # Обновление артистов (список id)
             if 'artists' in data:
                 artist_ids = data['artists']  # ожидаем список id
                 from models import Artist  # импортируем Artist здесь
@@ -635,7 +636,8 @@ def create_app():
                 type: object
                 properties:
                   id:
-                    type: integer
+                    type: string
+                    format: uuid
                   concert_id:
                     type: integer
                   ticket_type_id:
@@ -695,14 +697,17 @@ def create_app():
                   example: 2
         responses:
           201:
-            description: Бронирование успешно создано
+            description: Бронирование принято в обработку
             schema:
               type: object
               properties:
                 message:
                   type: string
-                booking:
-                  type: object
+                booking_id:
+                  type: string
+                  format: uuid
+                status:
+                  type: string
           400:
             description: Ошибка валидации (недостаточно билетов или невернные параметры)
           404:
@@ -725,34 +730,49 @@ def create_app():
         if not ticket_type or ticket_type.concert_id != concert_id:
             return jsonify({"error": "Ticket type not found for this concert"}), 404
 
-        # Проверяем доступное количество билетов
-        booked_quantity = sum(b.quantity for b in ticket_type.bookings)
-        available_quantity = ticket_type.total_quantity - booked_quantity
-
-        if quantity > available_quantity:
-            return jsonify({"error": f"Not enough tickets available. Only {available_quantity} left."}), 400
-
-        # Создаем бронирование
+        booking_id = str(uuid.uuid4())
         user_id = get_jwt()['sub']
-        booking = Booking(
-            user_id=user_id,
-            concert_id=concert_id,
-            ticket_type_id=ticket_type_id,
-            quantity=quantity
-        )
 
-        db.session.add(booking)
-        db.session.commit()
+        def send_to_queue():
+            try:
+                connection = pika.BlockingConnection(
+                    pika.ConnectionParameters(
+                        host='rabbitmq',
+                        port=5672,
+                        credentials=pika.PlainCredentials('guest', 'guest'),
+                        connection_attempts=3,
+                        retry_delay=2
+                    )
+                )
+                channel = connection.channel()
+                channel.queue_declare(queue='booking_queue', durable=True)
+                
+                message = {
+                    'booking_id': booking_id,
+                    'user_id': user_id,
+                    'concert_id': concert_id,
+                    'ticket_type_id': ticket_type_id,
+                    'quantity': quantity
+                }
+                channel.basic_publish(
+                    exchange='',
+                    routing_key='booking_queue',
+                    body=json.dumps(message),
+                    properties=pika.BasicProperties(delivery_mode=2)
+                )
+                connection.close()
+                logger.info(f"Booking event {booking_id} sent to RabbitMQ for processing")
+            
+            except Exception as e:
+                logger.error(f"Failed to send booking event {booking_id} to RabbitMQ: {str(e)}")
+        
+        queue_thread = threading.Thread(target=send_to_queue, daemon=True)
+        queue_thread.start()
 
         return jsonify({
-            "message": "Booking created successfully",
-            "booking": {
-                "id": booking.id,
-                "concert_id": booking.concert_id,
-                "ticket_type_id": booking.ticket_type_id,
-                "quantity": booking.quantity,
-                "status": booking.status
-            }
+            "message": "Booking request accepted for processing",
+            "booking_id": booking_id,
+            "status": "processing"
         }), 201
 
 
@@ -786,18 +806,14 @@ def create_app():
             description: Доступ запрещён (требуется роль admin)
         """
         try:
-            # Общая выручка
             total_revenue = db.session.query(db.func.sum(Booking.quantity * TicketType.price)) \
                 .join(TicketType, Booking.ticket_type_id == TicketType.id) \
                 .scalar() or 0
 
-            # Всего продано билетов
             total_tickets_sold = db.session.query(db.func.sum(Booking.quantity)).scalar() or 0
 
-            # Активных концертов (дата больше текущей)
             active_concerts_count = Concert.query.filter(Concert.date >= datetime.utcnow()).count()
 
-            # Среднее значение бронирования
             total_bookings = Booking.query.count()
             average_booking_value = float(total_revenue) / total_bookings if total_bookings > 0 else 0
 
@@ -853,24 +869,19 @@ def create_app():
             concert_stats = []
 
             for concert in concerts:
-                # Всего доступных билетов
                 total_tickets_available = db.session.query(db.func.sum(TicketType.total_quantity)) \
                     .filter(TicketType.concert_id == concert.id).scalar() or 0
 
-                # Продано билетов
                 total_tickets_sold = db.session.query(db.func.sum(Booking.quantity)) \
                     .filter(Booking.concert_id == concert.id).scalar() or 0
 
-                # Заполненность в процентах
                 occupancy = (float(total_tickets_sold) / float(total_tickets_available) * 100) \
                     if total_tickets_available > 0 else 0
 
-                # Выручка по концерту
                 revenue = db.session.query(db.func.sum(Booking.quantity * TicketType.price)) \
                     .join(TicketType, Booking.ticket_type_id == TicketType.id) \
                     .filter(Booking.concert_id == concert.id).scalar() or 0
 
-                # Самый популярный тип билета
                 popular_ticket_query = db.session.query(
                     TicketType.type,
                     db.func.sum(Booking.quantity).label('total_sold')
@@ -1098,6 +1109,7 @@ def create_app():
 def run_consumer():
     """
     RabbitMQ Consumer для асинхронной обработки бронирований
+    Получает событие бронирования, проверяет доступность билетов и СОЗДАЕТ booking в БД
     """
     while True:
         try:
@@ -1110,50 +1122,65 @@ def run_consumer():
                 with app.app_context():
                     try:
                         message = json.loads(body)
-                        token = message.get('token')
-                        payload_data = message.get('payload')
+                        booking_id = message.get('booking_id')
+                        user_id = message.get('user_id')
+                        concert_id = message.get('concert_id')
+                        ticket_type_id = message.get('ticket_type_id')
+                        quantity = message.get('quantity')
 
-                        # Декодируем токен для получения user_id
-                        decoded_token = decode_token(token)
-                        user_id = decoded_token['sub']
+                        logger.info(f"[Consumer] Processing booking event {booking_id} for user {user_id}")
 
-                        concert_id = payload_data.get('concert_id')
-                        ticket_type_id = payload_data.get('ticket_type_id')
-                        quantity = payload_data.get('quantity')
-
-                        ticket_type = TicketType.query.get(ticket_type_id)
-                        if not ticket_type or ticket_type.concert_id != concert_id:
-                            logger.warning(f"[Consumer] Ticket type not found for concert {concert_id}")
+                        # Валидируем данные
+                        if not all([booking_id, user_id, concert_id, ticket_type_id, quantity]):
+                            logger.error(f"[Consumer] Invalid message format: {message}")
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
 
-                        booked_quantity = sum(b.quantity for b in ticket_type.bookings)
+                        # Получаем тип билета
+                        ticket_type = TicketType.query.get(ticket_type_id)
+                        if not ticket_type or ticket_type.concert_id != concert_id:
+                            logger.warning(f"[Consumer] TicketType {ticket_type_id} not found for concert {concert_id}")
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            return
+
+                        # Проверяем доступность билетов
+                        booked_quantity = sum(
+                            b.quantity for b in ticket_type.bookings 
+                            if b.status in ['confirmed', 'pending']
+                        )
                         available_quantity = ticket_type.total_quantity - booked_quantity
 
                         if quantity > available_quantity:
-                            logger.warning(f"[Consumer] Not enough tickets. Available: {available_quantity}")
+                            logger.warning(
+                                f"[Consumer] Not enough tickets for booking {booking_id}. "
+                                f"Available: {available_quantity}, Requested: {quantity}"
+                            )
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
 
                         booking = Booking(
+                            id=booking_id,
                             user_id=user_id,
                             concert_id=concert_id,
                             ticket_type_id=ticket_type_id,
-                            quantity=quantity
-                        )
+                            quantity=quantity,
+                            status='confirmed'
+)
+                        
                         db.session.add(booking)
                         db.session.commit()
-                        logger.info(f"[Consumer] Booking created: user_id={user_id}, concert_id={concert_id}, qty={quantity}")
+                        logger.info(f"[Consumer] Booking {booking_id} created and confirmed successfully")
 
                     except Exception as e:
-                        logger.error(f"[Consumer] Error processing message: {e}", exc_info=True)
+                        logger.error(f"[Consumer] Error processing booking event: {e}", exc_info=True)
+                        db.session.rollback()
 
                     finally:
                         ch.basic_ack(delivery_tag=method.delivery_tag)
 
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue='booking_queue', on_message_callback=callback)
-            logger.info('[Consumer] Waiting for messages...')
+            logger.info('[Consumer] Started, waiting for messages...')
             channel.start_consuming()
 
         except pika.exceptions.AMQPConnectionError as e:
@@ -1163,8 +1190,7 @@ def run_consumer():
 
 if __name__ == "__main__":
     app = create_app()
-    # Запускаем RabbitMQ consumer в отдельном потоке
     consumer_thread = threading.Thread(target=run_consumer, daemon=True)
     consumer_thread.start()
     logger.info("Starting admin-service on port 5003")
-    app.run(host="0.0.0.0", port=5003, debug=False)  # debug=False чтобы избежать запуска двух процессов
+    app.run(host="0.0.0.0", port=5003, debug=False)

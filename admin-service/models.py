@@ -70,12 +70,12 @@ class TicketType(db.Model):
 class Booking(db.Model):
     __tablename__ = 'bookings'
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.String(36), primary_key=True)  # UUID as string
     user_id = db.Column(db.Integer, nullable=False)
     concert_id = db.Column(db.Integer, db.ForeignKey('concerts.id'), nullable=False)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_types.id'), nullable=False)
     quantity = db.Column(db.Integer, nullable=False)
-    status = db.Column(db.String(20), nullable=False, default='booked')  # booked, paid, cancelled
+    status = db.Column(db.String(20), nullable=False, default='confirmed')  # confirmed, cancelled
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     # Связи

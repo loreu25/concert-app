@@ -22,7 +22,6 @@ def create_app():
     app.config.from_object(Config)
     app.config['JSON_SORT_KEYS'] = False
 
-    # Инициализируем Swagger для документации API
     swagger_config = {
         "headers": [],
         "specs": [
@@ -58,13 +57,11 @@ def create_app():
             db.session.commit()
             print(f'Admin user {admin_email} created.')
 
-    # ----------------------------------------
-    # JWT helpers
-    # ----------------------------------------
+
     def create_access_token(user):
         payload = {
-            "sub": str(user.id),  # Используем 'sub' (как строку) для идентификатора
-            "role": user.role, # Добавляем роль
+            "sub": str(user.id),
+            "role": user.role,
             "exp": datetime.utcnow() + timedelta(minutes=15)
         }
         return jwt.encode(payload, app.config["JWT_SECRET_KEY"], algorithm="HS256")
@@ -86,9 +83,6 @@ def create_app():
 
         return token
 
-    # ----------------------------------------
-    # ROUTES
-    # ----------------------------------------
 
     @app.route("/register", methods=["POST"])
     def register():
